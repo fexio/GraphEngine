@@ -20,7 +20,7 @@ namespace Trinity.Storage
     public unsafe partial class DynamicMemoryCloud : MemoryCloud
     {
         //private int server_count = -1;
-        private int partition_count = -1;    
+        private int partition_count = -1;
         private int my_partition_id = -1;
         private int my_proxy_id = -1;
         private ChunkCollection m_chunks = new ChunkCollection();
@@ -38,8 +38,10 @@ namespace Trinity.Storage
         }
 
         internal ClusterConfig cluster_config;
+        internal INameService m_nameservice;
+        internal NameDescriptor m_namedescriptor = new NameDescriptor();
 
-        
+
 
         public void OnStorageJoin(RemoteStorage remoteStorage)
         {
@@ -50,7 +52,7 @@ namespace Trinity.Storage
 
         private object _QueryChunkedRemoteStorageInformation(RemoteStorage remoteStorage)
         {
-            
+
             throw new NotImplementedException();
         }
 
@@ -127,8 +129,13 @@ namespace Trinity.Storage
             return (GetStorageByCellId(cellId) as ChunkedStorage).IsLocal(cellId);
         }
 
+        public ChunkedStorage ChunkedStorageTable(int id) => StorageTable[id] as ChunkedStorage;
+
         public override bool Open(ClusterConfig config, bool nonblocking)
         {
+            Log.WriteLine($"DynamicMemoryCloud: server {m_namedescriptor.Nickname} starting.");
+            TrinityErrorCode errno = TrinityErrorCode.E_SUCCESS;
+
             this.cluster_config = config;
             my_partition_id = DynamicClusterConfig.Instance.LocalPartitionId;
             my_proxy_id = -1;
@@ -143,6 +150,25 @@ namespace Trinity.Storage
                 StorageTable[i] = new ChunkedStorage();
             }
 
+            if (TrinityErrorCode.E_SUCCESS != (errno = ChunkedStorageTable(my_partition_id).Mount(Global.LocalStorage)))
+            {
+                //TODO
+            }
+            
+            m_nameservice = AssemblyUtility.GetAllClassInstances(t => t.GetConstructor(new Type[] { }).Invoke(new object[] { }) as INameService).First();
+            m_nameservice.NewServerInfoPublished += (o, e) =>
+            {
+                var name = e.Item1;
+                var si = e.Item2;
+                Log.WriteLine($"DynamicCluster: New server info published: {name.Nickname}, {si.ToString()}");
+                Task t = new Task(() => Connect(name, si));
+                t.Start();
+            };
+            ServerInfo my_si = new ServerInfo(Global.MyIPAddress.ToString(), Global.MyIPEndPoint.Port, Global.MyAssemblyPath, TrinityConfig.LoggingLevel);
+            m_nameservice.PublishServerInfo(m_namedescriptor, my_si);
+            ServerConnected += DynamicMemoryCloud_ServerConnected;
+            ServerDisconnected += DynamicMemoryCloud_ServerDisconnected;
+
             if (cluster_config.RunningMode == RunningMode.Server && !server_found)
             {
                 goto server_not_found;
@@ -153,13 +179,35 @@ namespace Trinity.Storage
 
             return true;
 
-        server_not_found:
+            server_not_found:
             if (cluster_config.RunningMode == RunningMode.Server || cluster_config.RunningMode == RunningMode.Client)
                 Log.WriteLine(LogLevel.Warning, "Incorrect server configuration. Message passing via CloudStorage not possible.");
             else if (cluster_config.RunningMode == RunningMode.Proxy)
                 Log.WriteLine(LogLevel.Warning, "No servers are found. Message passing to servers via CloudStorage not possible.");
             return false;
 
+        }
+
+        public void Shutdown()
+        {
+            //TODO inform my peers that I'm leaving
+        }
+
+        private void DynamicMemoryCloud_ServerDisconnected(object sender, ServerStatusEventArgs e)
+        {
+            throw new NotImplementedException();
+        }
+
+        private void DynamicMemoryCloud_ServerConnected(object sender, ServerStatusEventArgs e)
+        {
+            throw new NotImplementedException();
+        }
+
+        private void Connect(NameDescriptor name, ServerInfo si)
+        {
+            Log.WriteLine($"DynamicCluster: connecting to {name} at {si.HostName}:{si.Port}");
+            RemoteStorage rs = new RemoteStorage();
+            OnStorageJoin(rs);
         }
 
         private void CheckServerProtocolSignatures()
